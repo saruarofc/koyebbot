@@ -1,6 +1,7 @@
 import os
-import asyncio
+import time
 import yt_dlp
+from PIL import Image
 from pyrogram import Client, filters
 from pyrogram.types import Message
 from pyrogram.enums import ParseMode
@@ -43,15 +44,20 @@ async def start(client, message: Message):
 
 
 # Function to track progress
-async def progress_callback(current, total, message):
+async def progress_callback(current, total, message, start_time):
+    elapsed_time = time.time() - start_time
+    speed = current / elapsed_time if elapsed_time > 0 else 0
+    remaining_time = (total - current) / speed if speed > 0 else 0
+
     percent = current * 100 / total
     progress = "▓" * int(percent / 5) + "░" * (20 - int(percent / 5))
+
     status_text = (
-        f"DOWNLOADING:\n\n"
+        f"UPLOADING:\n\n"
         f"[{progress}] | {percent:.2f}%\n\n"
         f"📁 Tᴏᴛᴀʟ Sɪᴢᴇ: {total / (1024 * 1024):.2f} MiB\n"
-        f"🚀 Sᴘᴇᴇᴅ: Calculating...\n"
-        f"🕔 Tɪᴍᴇ: Estimating..."
+        f"🚀 Sᴘᴇᴇᴅ: {speed / (1024 * 1024):.2f} MiB/s\n"
+        f"🕔 Tɪᴍᴇ: {int(remaining_time // 60)}m {int(remaining_time % 60)}s"
     )
     await message.edit_text(status_text)
 
@@ -68,12 +74,11 @@ async def download_video(client, message: Message):
 
     status_message = await message.reply_text("⏳ *Processing your video...*", parse_mode=ParseMode.MARKDOWN)
 
-    # Set download options with cookies
+    # Set download options with thumbnail
     ydl_opts = {
         "format": "best",
         "outtmpl": "downloads/%(title)s.%(ext)s",
-        "cookiefile": "cookies.txt",  # Pass YouTube cookies for authentication
-        "writethumbnail": True,  # Download thumbnail
+        "writethumbnail": True,  # Ensure thumbnail is downloaded
         "merge_output_format": "mp4",
     }
 
@@ -85,18 +90,27 @@ async def download_video(client, message: Message):
             file_path = ydl.prepare_filename(info)
             thumb_path = file_path.rsplit(".", 1)[0] + ".webp"  # Thumbnail path
 
+            # Convert .webp to .jpg if necessary
+            if os.path.exists(thumb_path):
+                new_thumb_path = thumb_path.replace(".webp", ".jpg")
+                Image.open(thumb_path).convert("RGB").save(new_thumb_path, "JPEG")
+                os.remove(thumb_path)
+                thumb_path = new_thumb_path  # Use converted thumbnail
+
         await status_message.edit_text("🚀 *Uploading to Telegram...*", parse_mode=ParseMode.MARKDOWN)
 
-        # Send video with progress bar
+        # Track upload time
+        start_time = time.time()
+
         async def upload_progress(current, total):
-            await progress_callback(current, total, status_message)
+            await progress_callback(current, total, status_message, start_time)
 
         await client.send_video(
             chat_id=message.chat.id,
             video=file_path,
             caption=f"🎬 *Downloaded Video:* {info['title']}",
             parse_mode=ParseMode.MARKDOWN,
-            thumb=thumb_path if os.path.exists(thumb_path) else None,  # Attach thumbnail if available
+            thumb=thumb_path if os.path.exists(thumb_path) else None,  # Attach valid thumbnail
             progress=upload_progress,
         )
 
