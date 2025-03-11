@@ -1,9 +1,10 @@
-import os
-import asyncio
-import yt_dlp
 from pyrogram import Client, filters
 from pyrogram.types import Message
 from pyrogram.enums import ParseMode
+import os
+import yt_dlp
+import asyncio
+
 from config import API_ID, API_HASH, BOT_TOKEN
 
 # Initialize the bot
@@ -28,9 +29,8 @@ class Bot(Client):
         await super().stop()
         print('Video Downloader Bot Stopped')
 
-
+# Create bot instance
 app = Bot()
-
 
 # Welcome message
 @app.on_message(filters.command("start") & filters.private)
@@ -40,20 +40,6 @@ async def start(client, message: Message):
         "Send me a YouTube link, and I'll download and send the video to you!"
     )
     await message.reply_text(welcome_text, parse_mode=ParseMode.MARKDOWN)
-
-
-# Function to track progress
-async def progress_callback(current, total, message):
-    percent = current * 100 / total
-    progress = "▓" * int(percent / 5) + "░" * (20 - int(percent / 5))
-    status_text = (
-        f"DOWNLOADING:\n\n"
-        f"[{progress}] | {percent:.2f}%\n\n"
-        f"📁 Tᴏᴛᴀʟ Sɪᴢᴇ: {total / (1024 * 1024):.2f} MiB\n"
-    
-    )
-    await message.edit_text(status_text)
-
 
 # Handle video links
 @app.on_message(filters.text & filters.private)
@@ -72,8 +58,6 @@ async def download_video(client, message: Message):
         "format": "best",
         "outtmpl": "downloads/%(title)s.%(ext)s",
         "cookiefile": "cookies.txt",  # Pass YouTube cookies for authentication
-        "writethumbnail": True,  # Download thumbnail
-        "merge_output_format": "mp4",
     }
 
     try:
@@ -82,33 +66,23 @@ async def download_video(client, message: Message):
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=True)
             file_path = ydl.prepare_filename(info)
-            thumb_path = file_path.rsplit(".", 1)[0] + ".webp"  # Thumbnail path
 
         await status_message.edit_text("🚀 *Uploading to Telegram...*", parse_mode=ParseMode.MARKDOWN)
 
-        # Send video with progress bar
-        async def upload_progress(current, total):
-            await progress_callback(current, total, status_message)
-
+        # Send video
         await client.send_video(
             chat_id=message.chat.id,
             video=file_path,
             caption=f"🎬 *Downloaded Video:* {info['title']}",
-            parse_mode=ParseMode.MARKDOWN,
-            thumb=thumb_path if os.path.exists(thumb_path) else None,  # Attach thumbnail if available
-            progress=upload_progress,
+            parse_mode=ParseMode.MARKDOWN
         )
 
-        # Cleanup
-        os.remove(file_path)
-        if os.path.exists(thumb_path):
-            os.remove(thumb_path)
+        os.remove(file_path)  # Clean up
 
         await status_message.edit_text("✅ *Video sent successfully!*", parse_mode=ParseMode.MARKDOWN)
 
     except Exception as e:
         await status_message.edit_text(f"❌ *Error:* {str(e)}", parse_mode=ParseMode.MARKDOWN)
-
 
 # Run the bot
 if name == "main":
