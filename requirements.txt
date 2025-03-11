@@ -1,4 +1,3 @@
-dnspython
 motor
 psutil
 pyrofork==2.3.45
@@ -13,4 +12,3 @@ itsdangerous==2.0.1
 aiohttp==3.9.3
 yt-dlp
 pyrogram
-Pillow  # Add this for image conversion
