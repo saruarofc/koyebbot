@@ -11,3 +11,5 @@ Jinja2==3.0.3
 werkzeug==2.0.2
 itsdangerous==2.0.1
 aiohttp==3.9.3
+yt-dlp
+pyrogram
