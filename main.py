@@ -2,8 +2,8 @@ from pyrogram import Client, filters
 from pyrogram.types import Message
 from pyrogram.enums import ParseMode
 import os
-import asyncio
 import yt_dlp
+import asyncio
 
 from config import API_ID, API_HASH, BOT_TOKEN
 
@@ -41,37 +41,23 @@ async def start(client, message: Message):
     )
     await message.reply_text(welcome_text, parse_mode=ParseMode.MARKDOWN)
 
-# Download progress callback
-def progress_hook(d):
-    if d['status'] == 'downloading':
-        percentage = d.get("_percent_str", "0%")
-        speed = d.get("_speed_str", "N/A")
-        eta = d.get("_eta_str", "N/A")
-        d['message'].edit_text(
-            f"⬇️ *Downloading...*\n\n"
-            f"📊 Progress: `{percentage}`\n"
-            f"⚡ Speed: `{speed}`\n"
-            f"⏳ ETA: `{eta}`",
-            parse_mode=ParseMode.MARKDOWN
-        )
-
 # Handle video links
 @app.on_message(filters.text & filters.private)
 async def download_video(client, message: Message):
     url = message.text.strip()
 
-    # Check if it's a valid YouTube link
-    if not (url.startswith("http://") or url.startswith("https://")):
+    # Validate URL
+    if not url.startswith(("http://", "https://")):
         await message.reply_text("❌ Please send a valid video link!", parse_mode=ParseMode.MARKDOWN)
         return
 
     status_message = await message.reply_text("⏳ *Processing your video...*", parse_mode=ParseMode.MARKDOWN)
 
-    # Download video
+    # Set download options with cookies
     ydl_opts = {
         "format": "best",
         "outtmpl": "downloads/%(title)s.%(ext)s",
-        "progress_hooks": [lambda d: progress_hook(d | {'message': status_message})],
+        "cookiefile": "cookies.txt",  # Pass YouTube cookies for authentication
     }
 
     try:
