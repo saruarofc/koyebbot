@@ -1,5 +1,6 @@
 from pyrogram import Client, filters, idle
-from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, Message
+from pyrogram.types import Message
+from pyrogram.enums import ParseMode
 from config import API_ID, API_HASH, BOT_TOKEN, OWNER_ID, MONGO_DB_URI
 import motor.motor_asyncio
 import aiohttp
@@ -8,7 +9,7 @@ import time
 import asyncio
 from urllib.parse import urlparse
 
-# MongoDB setup (optional, for storing uploaded video metadata)
+# MongoDB setup
 mongo_client = motor.motor_asyncio.AsyncIOMotorClient(MONGO_DB_URI)
 db = mongo_client["video_uploader"]
 videos_collection = db["videos"]
@@ -39,11 +40,11 @@ app = Bot()
 
 # Welcome message handler
 @app.on_message(filters.command("start") & filters.private)
-async def start(client, message):
+async def start(client, message: Message):
     welcome_text = "🎥 *Welcome to Video Uploader Bot!* 🎥\n\n" \
                   "Send me a direct video link (e.g., `https://example.com/video.mp4`), " \
                   "and I’ll upload it to Telegram with progress updates every 5 seconds!"
-    await message.reply_text(welcome_text, parse_mode="markdown")
+    await message.reply_text(welcome_text, parse_mode=ParseMode.MARKDOWN)
 
 # Function to format progress message
 def format_progress(status: str, percentage: float, speed: float, eta: str) -> str:
@@ -61,7 +62,10 @@ async def handle_link(client, message: Message):
     
     # Basic URL validation
     if not url.startswith(('http://', 'https://')):
-        await message.reply_text("❌ Please send a valid URL starting with http:// or https://", parse_mode="markdown")
+        await message.reply_text(
+            "❌ Please send a valid URL starting with http:// or https://",
+            parse_mode=ParseMode.MARKDOWN
+        )
         return
     
     # Check if it’s likely a video link by extension
@@ -70,11 +74,14 @@ async def handle_link(client, message: Message):
     if not parsed_url.path.lower().endswith(video_extensions):
         await message.reply_text(
             "❌ Please send a direct link to a video file (e.g., .mp4, .mkv, .avi, .mov, .wmv)",
-            parse_mode="markdown"
+            parse_mode=ParseMode.MARKDOWN
         )
         return
     
-    status_message = await message.reply_text("⏳ *Downloading your video, please wait...* ⏳", parse_mode="markdown")
+    status_message = await message.reply_text(
+        "⏳ *Downloading your video, please wait...* ⏳",
+        parse_mode=ParseMode.MARKDOWN
+    )
     file_name = f"temp_{message.id}_{os.path.basename(parsed_url.path)}"
     
     try:
@@ -107,16 +114,18 @@ async def handle_link(client, message: Message):
                         if int(elapsed_time) % 5 == 0 or percentage >= 100:
                             await status_message.edit_text(
                                 format_progress("Downloading", percentage, speed, eta),
-                                parse_mode="markdown"
+                                parse_mode=ParseMode.MARKDOWN
                             )
                             await asyncio.sleep(1)  # Prevent flooding
         
         # Upload video to Telegram with progress
-        await status_message.edit_text("🚀 *Uploading your video to Telegram...* 🚀", parse_mode="markdown")
+        await status_message.edit_text(
+            "🚀 *Uploading your video to Telegram...* 🚀",
+            parse_mode=ParseMode.MARKDOWN
+        )
         upload_start_time = time.time()
         uploaded_size = 0
         
-        # Simulate upload progress (Telegram doesn’t provide real-time upload progress)
         async def upload_progress_tracker(current, total):
             nonlocal uploaded_size, upload_start_time
             uploaded_size = current / 1024 / 1024  # Convert to MB
@@ -132,7 +141,7 @@ async def handle_link(client, message: Message):
             if int(elapsed_time) % 5 == 0 or percentage >= 100:
                 await status_message.edit_text(
                     format_progress("Uploading", percentage, speed, eta),
-                    parse_mode="markdown"
+                    parse_mode=ParseMode.MARKDOWN
                 )
                 await asyncio.sleep(1)
         
@@ -158,11 +167,14 @@ async def handle_link(client, message: Message):
         
         await status_message.edit_text(
             "✅ *Video uploaded successfully!* ✅\nEnjoy your video!",
-            parse_mode="markdown"
+            parse_mode=ParseMode.MARKDOWN
         )
         
     except Exception as e:
-        await status_message.edit_text(f"❌ *Error*: {str(e)} ❌", parse_mode="markdown")
+        await status_message.edit_text(
+            f"❌ *Error*: {str(e)} ❌",
+            parse_mode=ParseMode.MARKDOWN
+        )
         if os.path.exists(file_name):
             os.remove(file_name)
 
