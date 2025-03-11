@@ -12,7 +12,7 @@ from urllib.parse import urlparse
 # MongoDB setup
 mongo_client = motor.motor_asyncio.AsyncIOMotorClient(MONGO_DB_URI)
 db = mongo_client["video_uploader"]
-videos_collection = db["videos"]
+files_collection = db["files"]
 
 class Bot(Client):
     def __init__(self):
@@ -29,11 +29,11 @@ class Bot(Client):
         await super().start()
         me = await self.get_me()
         self.username = '@' + me.username
-        print(f'Video Uploader Bot Started - {self.username}')
+        print(f'File Uploader Bot Started - {self.username}')
 
     async def stop(self, *args):
         await super().stop()
-        print('Video Uploader Bot Stopped')
+        print('File Uploader Bot Stopped')
 
 # Create bot instance
 app = Bot()
@@ -41,8 +41,8 @@ app = Bot()
 # Welcome message handler
 @app.on_message(filters.command("start") & filters.private)
 async def start(client, message: Message):
-    welcome_text = "🎥 *Welcome to Video Uploader Bot!* 🎥\n\n" \
-                  "Send me a direct video link (e.g., `https://example.com/video.mp4`), " \
+    welcome_text = "📥 *Welcome to File Uploader Bot!* 📥\n\n" \
+                  "Send me any direct download link (e.g., `https://example.com/file.mp4` or YouTube video links), " \
                   "and I’ll upload it to Telegram with progress updates every 5 seconds!"
     await message.reply_text(welcome_text, parse_mode=ParseMode.MARKDOWN)
 
@@ -55,7 +55,7 @@ def format_progress(status: str, percentage: float, speed: float, eta: str) -> s
         f"**Estimated Time Left**: `{eta}`"
     )
 
-# Handle direct video links
+# Handle any direct download link
 @app.on_message(filters.text & filters.private)
 async def handle_link(client, message: Message):
     url = message.text.strip()
@@ -68,25 +68,19 @@ async def handle_link(client, message: Message):
         )
         return
     
-    # Check if it’s likely a video link by extension
-    video_extensions = ('.mp4', '.mkv', '.avi', '.mov', '.wmv')
-    parsed_url = urlparse(url)
-    if not parsed_url.path.lower().endswith(video_extensions):
-        await message.reply_text(
-            "❌ Please send a direct link to a video file (e.g., .mp4, .mkv, .avi, .mov, .wmv)",
-            parse_mode=ParseMode.MARKDOWN
-        )
-        return
-    
     status_message = await message.reply_text(
-        "⏳ *Downloading your video, please wait...* ⏳",
+        "⏳ *Downloading your file, please wait...* ⏳",
         parse_mode=ParseMode.MARKDOWN
     )
-    file_name = f"temp_{message.id}_{os.path.basename(parsed_url.path)}"
+    parsed_url = urlparse(url)
+    file_name = f"temp_{message.id}_{os.path.basename(parsed_url.path or 'downloaded_file')}"
     
     try:
-        # Download the video with progress tracking
-        async with aiohttp.ClientSession() as session:
+        # Download the file with progress tracking and custom headers
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+        }
+        async with aiohttp.ClientSession(headers=headers) as session:
             async with session.get(url) as resp:
                 if resp.status != 200:
                     raise Exception(f"Failed to download: HTTP {resp.status}")
@@ -118,9 +112,9 @@ async def handle_link(client, message: Message):
                             )
                             await asyncio.sleep(1)  # Prevent flooding
         
-        # Upload video to Telegram with progress
+        # Upload to Telegram with progress
         await status_message.edit_text(
-            "🚀 *Uploading your video to Telegram...* 🚀",
+            "🚀 *Uploading your file to Telegram...* 🚀",
             parse_mode=ParseMode.MARKDOWN
         )
         upload_start_time = time.time()
@@ -145,28 +139,43 @@ async def handle_link(client, message: Message):
                 )
                 await asyncio.sleep(1)
         
-        sent_message = await client.send_video(
-            chat_id=message.chat.id,
-            video=file_name,
-            caption=f"🎬 Uploaded from: {url}",
-            supports_streaming=True,
-            progress=upload_progress_tracker
-        )
+        # Try uploading as video first, fall back to document if it fails
+        try:
+            sent_message = await client.send_video(
+                chat_id=message.chat.id,
+                video=file_name,
+                caption=f"🎬 Uploaded from: {url}",
+                supports_streaming=True,
+                progress=upload_progress_tracker
+            )
+            file_id = sent_message.video.file_id
+            is_video = True
+        except Exception as video_error:
+            # If video upload fails, upload as document
+            sent_message = await client.send_document(
+                chat_id=message.chat.id,
+                document=file_name,
+                caption=f"📄 Uploaded from: {url}",
+                progress=upload_progress_tracker
+            )
+            file_id = sent_message.document.file_id
+            is_video = False
         
         # Store metadata in MongoDB
-        video_data = {
+        file_data = {
             "user_id": message.from_user.id,
             "url": url,
-            "file_id": sent_message.video.file_id,
+            "file_id": file_id,
+            "is_video": is_video,
             "uploaded_at": message.date
         }
-        await videos_collection.insert_one(video_data)
+        await files_collection.insert_one(file_data)
         
         # Clean up
         os.remove(file_name)
         
         await status_message.edit_text(
-            "✅ *Video uploaded successfully!* ✅\nEnjoy your video!",
+            f"✅ *File uploaded successfully!* ✅\n{'Video' if is_video else 'Document'} is ready!",
             parse_mode=ParseMode.MARKDOWN
         )
         
