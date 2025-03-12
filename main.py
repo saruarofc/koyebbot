@@ -1,17 +1,25 @@
 from pyrogram import Client, filters
-from pyrogram.types import Message
-from pyrogram.enums import ParseMode
+from pyrogram.types import Message, Video
+from pymongo import MongoClient
 import os
-import yt_dlp
 import asyncio
 
-from config import API_ID, API_HASH, BOT_TOKEN
+from config import API_ID, API_HASH, BOT_TOKEN, OWNER_ID, MONGO_DB_URI
+
+# Initialize MongoDB
+mongo_client = MongoClient(MONGO_DB_URI)
+db = mongo_client["movie_store"]
+videos_collection = db["videos"]
+requests_collection = db["requests"]
+
+# Admin Channel ID
+ADMIN_CHANNEL_ID = -1002006884073
 
 # Initialize the bot
 class Bot(Client):
-    def init(self):
-        super().init(
-            "video_downloader_bot",
+    def __init__(self):
+        super().__init__(
+            "movie_store_bot",
             api_id=API_ID,
             api_hash=API_HASH,
             bot_token=BOT_TOKEN,
@@ -23,11 +31,11 @@ class Bot(Client):
         await super().start()
         me = await self.get_me()
         self.username = '@' + me.username
-        print(f'Video Downloader Bot Started - {self.username}')
+        print(f'Movie Store Bot Started - {self.username}')
 
     async def stop(self, *args):
         await super().stop()
-        print('Video Downloader Bot Stopped')
+        print('Movie Store Bot Stopped')
 
 # Create bot instance
 app = Bot()
@@ -36,54 +44,92 @@ app = Bot()
 @app.on_message(filters.command("start") & filters.private)
 async def start(client, message: Message):
     welcome_text = (
-        "🎥 *Welcome to Video Downloader Bot!* 🎥\n\n"
-        "Send me a YouTube link, and I'll download and send the video to you!"
+        "🎬 *Welcome to Movie Store Bot!* 🎬\n\n"
+        "🔍 Search for any movie by typing its name.\n"
+        "🎥 Browse our collection and enjoy!"
     )
-    await message.reply_text(welcome_text, parse_mode=ParseMode.MARKDOWN)
+    await message.reply_text(welcome_text)
 
-# Handle video links
+# Search for videos in the database
 @app.on_message(filters.text & filters.private)
-async def download_video(client, message: Message):
-    url = message.text.strip()
+async def search_movie(client, message: Message):
+    query = message.text.strip()
+    movie = videos_collection.find_one({"title": {"$regex": query, "$options": "i"}})
 
-    # Validate URL
-    if not url.startswith(("http://", "https://")):
-        await message.reply_text("❌ Please send a valid video link!", parse_mode=ParseMode.MARKDOWN)
-        return
-
-    status_message = await message.reply_text("⏳ *Processing your video...*", parse_mode=ParseMode.MARKDOWN)
-
-    # Set download options with cookies
-    ydl_opts = {
-        "format": "best",
-        "outtmpl": "downloads/%(title)s.%(ext)s",
-        "cookiefile": "cookies.txt",  # Pass YouTube cookies for authentication
-    }
-
-    try:
-        os.makedirs("downloads", exist_ok=True)
-
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=True)
-            file_path = ydl.prepare_filename(info)
-
-        await status_message.edit_text("🚀 *Uploading to Telegram...*", parse_mode=ParseMode.MARKDOWN)
-
-        # Send video
-        await client.send_video(
-            chat_id=message.chat.id,
-            video=file_path,
-            caption=f"🎬 *Downloaded Video:* {info['title']}",
-            parse_mode=ParseMode.MARKDOWN
+    if movie:
+        await message.reply_video(
+            movie["video_id"],
+            caption=f"🎬 *{movie['title']}*\n📜 {movie['description']}\n📊 Views: {movie['views'] + 1}"
+        )
+        videos_collection.update_one({"_id": movie["_id"]}, {"$inc": {"views": 1}})
+    else:
+        requests_collection.insert_one({"user_id": message.from_user.id, "query": query})
+        await message.reply_text(
+            "❌ Sorry, we couldn’t find this movie.\n📥 Your request has been recorded!"
         )
 
-        os.remove(file_path)  # Clean up
+# Admin - Upload videos
+@app.on_message(filters.video & filters.user(OWNER_ID))
+async def add_video(client, message: Message):
+    video = message.video.file_id
+    caption = message.caption if message.caption else "No description"
+    title = caption.split("\n")[0] if "\n" in caption else caption
 
-        await status_message.edit_text("✅ *Video sent successfully!*", parse_mode=ParseMode.MARKDOWN)
+    videos_collection.insert_one({
+        "video_id": video,
+        "title": title,
+        "description": caption,
+        "uploaded_by": message.from_user.id,
+        "views": 0,
+        "requests": 0
+    })
 
-    except Exception as e:
-        await status_message.edit_text(f"❌ *Error:* {str(e)}", parse_mode=ParseMode.MARKDOWN)
+    await message.reply_text("✅ *Video added to the store!*")
+
+# Forwarded videos for admin review
+@app.on_message(filters.forwarded & filters.private)
+async def forward_to_admin(client, message: Message):
+    if message.video:
+        await client.send_message(
+            ADMIN_CHANNEL_ID,  # Forward to admin channel
+            "📩 *New Forwarded Video for Review!*",
+            reply_to_message_id=message.message_id
+        )
+        await message.reply_text("📤 *Video sent to admin for approval!*")
+
+# Edit video details (Admin Only)
+@app.on_message(filters.command("edit") & filters.user(OWNER_ID))
+async def edit_video(client, message: Message):
+    try:
+        _, old_title, new_title = message.text.split(" | ")
+        videos_collection.update_one({"title": old_title}, {"$set": {"title": new_title}})
+        await message.reply_text(f"✅ *Updated movie title from '{old_title}' to '{new_title}'!*")
+    except:
+        await message.reply_text("❌ *Invalid format! Use: /edit OldTitle | NewTitle*")
+
+# Delete videos (Admin Only)
+@app.on_message(filters.command("delete") & filters.user(OWNER_ID))
+async def delete_video(client, message: Message):
+    _, title = message.text.split(" ", 1)
+    result = videos_collection.delete_one({"title": title})
+
+    if result.deleted_count:
+        await message.reply_text(f"✅ *Movie '{title}' deleted!*")
+    else:
+        await message.reply_text("❌ *Movie not found!*")
+
+# Notify users when requested movie is added
+async def notify_users(title):
+    requests = requests_collection.find({"query": {"$regex": title, "$options": "i"}})
+    
+    for request in requests:
+        try:
+            await app.send_message(request["user_id"], f"🎬 *Good news!*\nThe movie '{title}' has been added!")
+        except:
+            pass
+
+    requests_collection.delete_many({"query": {"$regex": title, "$options": "i"}})
 
 # Run the bot
-if name == "main":
+if __name__ == "__main__":
     app.run()
