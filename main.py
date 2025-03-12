@@ -2,7 +2,6 @@ from pyrogram import Client, filters
 from pyrogram.types import Message, Video
 from pymongo import MongoClient
 import os
-import asyncio
 
 from config import API_ID, API_HASH, BOT_TOKEN, OWNER_ID, MONGO_DB_URI
 
@@ -10,7 +9,7 @@ from config import API_ID, API_HASH, BOT_TOKEN, OWNER_ID, MONGO_DB_URI
 mongo_client = MongoClient(MONGO_DB_URI)
 db = mongo_client["movie_store"]
 videos_collection = db["videos"]
-requests_collection = db["requests"]
+users_collection = db["users"]
 
 # Admin Channel ID
 ADMIN_CHANNEL_ID = -1002006884073
@@ -40,17 +39,38 @@ class Bot(Client):
 # Create bot instance
 app = Bot()
 
+# Store user data
+def save_user(user):
+    users_collection.update_one(
+        {"user_id": user.id},
+        {"$set": {"name": user.first_name, "username": user.username}},
+        upsert=True
+    )
+
 # Welcome message
 @app.on_message(filters.command("start") & filters.private)
 async def start(client, message: Message):
-    welcome_text = (
-        "🎬 *Welcome to Movie Store Bot!* 🎬\n\n"
-        "🔍 Search for any movie by typing its name.\n"
-        "🎥 Browse our collection and enjoy!"
-    )
-    await message.reply_text(welcome_text)
+    user_id = message.from_user.id
+    save_user(message.from_user)
 
-# Search for videos in the database
+    if user_id == OWNER_ID:
+        admin_text = (
+            "🛠 *Admin Commands:*\n"
+            "📊 `/u` - List all users\n"
+            "🎬 `/i` - List all forwarded videos\n"
+            "➕ Upload videos to store them\n"
+            "📤 Forward videos to send them for review"
+        )
+        await message.reply_text(admin_text)
+    else:
+        welcome_text = (
+            "🎬 *Welcome to Movie Store Bot!* 🎬\n\n"
+            "🔍 Search for any movie by typing its name.\n"
+            "🎥 Browse our collection and enjoy!"
+        )
+        await message.reply_text(welcome_text)
+
+# Search for videos
 @app.on_message(filters.text & filters.private)
 async def search_movie(client, message: Message):
     query = message.text.strip()
@@ -63,72 +83,65 @@ async def search_movie(client, message: Message):
         )
         videos_collection.update_one({"_id": movie["_id"]}, {"$inc": {"views": 1}})
     else:
-        requests_collection.insert_one({"user_id": message.from_user.id, "query": query})
-        await message.reply_text(
-            "❌ Sorry, we couldn’t find this movie.\n📥 Your request has been recorded!"
-        )
+        await message.reply_text("❌ Sorry, movie not found.\n📥 We will try to add it soon!")
 
-# Admin - Upload videos
-@app.on_message(filters.video & filters.user(OWNER_ID))
-async def add_video(client, message: Message):
+# Store and forward received videos
+@app.on_message(filters.video & filters.private)
+async def handle_video(client, message: Message):
     video = message.video.file_id
     caption = message.caption if message.caption else "No description"
     title = caption.split("\n")[0] if "\n" in caption else caption
+    uploader = message.from_user
 
+    # Save video data
     videos_collection.insert_one({
         "video_id": video,
         "title": title,
         "description": caption,
-        "uploaded_by": message.from_user.id,
-        "views": 0,
-        "requests": 0
+        "uploaded_by": uploader.id,
+        "views": 0
     })
 
-    await message.reply_text("✅ *Video added to the store!*")
+    # Forward to admin channel
+    forwarded = await client.forward_messages(ADMIN_CHANNEL_ID, message.chat.id, message.message_id)
+    
+    await message.reply_text("✅ *Video stored and sent to admin!*")
 
-# Forwarded videos for admin review
+# Forwarded videos to admin channel
 @app.on_message(filters.forwarded & filters.private)
 async def forward_to_admin(client, message: Message):
     if message.video:
-        await client.send_message(
-            ADMIN_CHANNEL_ID,  # Forward to admin channel
-            "📩 *New Forwarded Video for Review!*",
-            reply_to_message_id=message.message_id
-        )
-        await message.reply_text("📤 *Video sent to admin for approval!*")
+        forwarded = await client.forward_messages(ADMIN_CHANNEL_ID, message.chat.id, message.message_id)
+        videos_collection.insert_one({
+            "video_id": message.video.file_id,
+            "title": "Forwarded Video",
+            "description": "User forwarded this video.",
+            "uploaded_by": message.from_user.id,
+            "views": 0
+        })
+        await message.reply_text("📤 *Video sent to admin for review!*")
 
-# Edit video details (Admin Only)
-@app.on_message(filters.command("edit") & filters.user(OWNER_ID))
-async def edit_video(client, message: Message):
-    try:
-        _, old_title, new_title = message.text.split(" | ")
-        videos_collection.update_one({"title": old_title}, {"$set": {"title": new_title}})
-        await message.reply_text(f"✅ *Updated movie title from '{old_title}' to '{new_title}'!*")
-    except:
-        await message.reply_text("❌ *Invalid format! Use: /edit OldTitle | NewTitle*")
-
-# Delete videos (Admin Only)
-@app.on_message(filters.command("delete") & filters.user(OWNER_ID))
-async def delete_video(client, message: Message):
-    _, title = message.text.split(" ", 1)
-    result = videos_collection.delete_one({"title": title})
-
-    if result.deleted_count:
-        await message.reply_text(f"✅ *Movie '{title}' deleted!*")
-    else:
-        await message.reply_text("❌ *Movie not found!*")
-
-# Notify users when requested movie is added
-async def notify_users(title):
-    requests = requests_collection.find({"query": {"$regex": title, "$options": "i"}})
+# Admin: List stored user data
+@app.on_message(filters.command("u") & filters.user(OWNER_ID))
+async def list_users(client, message: Message):
+    users = list(users_collection.find({}, {"_id": 0}))
     
-    for request in requests:
-        try:
-            await app.send_message(request["user_id"], f"🎬 *Good news!*\nThe movie '{title}' has been added!")
-        except:
-            pass
+    if users:
+        user_list = "\n".join([f"👤 {user['name']} (@{user['username']})" for user in users])
+        await message.reply_text(f"📊 *Registered Users:*\n{user_list}")
+    else:
+        await message.reply_text("❌ No users found.")
 
-    requests_collection.delete_many({"query": {"$regex": title, "$options": "i"}})
+# Admin: List previously forwarded videos
+@app.on_message(filters.command("i") & filters.user(OWNER_ID))
+async def list_forwarded_videos(client, message: Message):
+    videos = list(videos_collection.find({}, {"_id": 0, "video_id": 1, "title": 1}))
+
+    if videos:
+        video_list = "\n".join([f"🎬 {video['title']}" for video in videos])
+        await message.reply_text(f"📜 *Stored Videos:*\n{video_list}")
+    else:
+        await message.reply_text("❌ No videos found.")
 
 # Run the bot
 if __name__ == "__main__":
