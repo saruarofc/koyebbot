@@ -47,55 +47,56 @@ def save_user(user):
         upsert=True
     )
 
-# Welcome message
-@app.on_message(filters.command("start") & filters.private)
-async def start(client, message: Message):
-    user_id = message.from_user.id
+# Handle all messages, including video
+@app.on_message(filters.private)
+async def handle_all_messages(client, message: Message):
+    # Save user data on first interaction
     save_user(message.from_user)
 
-    if user_id == OWNER_ID:
-        admin_text = (
-            "🛠 *Admin Commands:*\n"
-            "📤 Upload videos to store them\n"
-            "🎬 Send video to admin channel"
-        )
-        await message.reply_text(admin_text)
+    # Check if the message contains a video
+    if message.video:
+        print(f"Received video from {message.from_user.id}")  # Log for debugging
+        video = message.video.file_id
+        caption = message.caption if message.caption else "No description"
+        title = caption.split("\n")[0] if "\n" in caption else caption
+        uploader = message.from_user
+
+        try:
+            # Forward the video to the admin channel
+            forwarded = await client.forward_messages(ADMIN_CHANNEL_ID, message.chat.id, message.message_id)
+            print(f"Video forwarded to admin channel {ADMIN_CHANNEL_ID}")  # Log forwarding
+
+            # Get file path from Telegram API
+            file_info = await client.get_file(video)
+            file_path = file_info.file_path
+            print(f"File path: {file_path}")  # Log the file path
+
+            # Generate temporary download link
+            temp_link = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_path}"
+
+            # Save video data in MongoDB
+            videos_collection.insert_one({
+                "video_id": video,
+                "title": title,
+                "description": caption,
+                "uploaded_by": uploader.id,
+                "views": 0,
+                "file_path": file_path
+            })
+
+            # Send temporary download link to the user
+            await message.reply_text(
+                f"✅ *Video uploaded and sent to admin channel!*\n\n📥 [Download Video]({temp_link})\n⚠️ *This link is valid for ~1 hour!*",
+                disable_web_page_preview=True
+            )
+
+        except Exception as e:
+            print(f"Error while processing video: {e}")  # Log error if any
+            await message.reply_text("❌ There was an error while processing the video.")
+    
     else:
-        welcome_text = (
-            "🎬 *Welcome to Movie Store Bot!* 🎬\n\n"
-            "🎥 Upload or request any movie."
-        )
-        await message.reply_text(welcome_text)
-
-# Upload video and get a link
-@app.on_message(filters.video & filters.private)
-async def handle_video(client, message: Message):
-    video = message.video.file_id
-    caption = message.caption if message.caption else "No description"
-    title = caption.split("\n")[0] if "\n" in caption else caption
-    uploader = message.from_user
-
-    # Forward video to the admin channel
-    forwarded = await client.forward_messages(ADMIN_CHANNEL_ID, message.chat.id, message.message_id)
-
-    # Get file path from Telegram API
-    file_info = await client.get_file(video)
-    file_path = file_info.file_path
-
-    # Generate temporary link
-    temp_link = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_path}"
-
-    # Save video data in MongoDB
-    videos_collection.insert_one({
-        "video_id": video,
-        "title": title,
-        "description": caption,
-        "uploaded_by": uploader.id,
-        "views": 0,
-        "file_path": file_path
-    })
-
-    await message.reply_text(f"✅ *Video uploaded and sent to admin channel!*\n\n📥 [Download Video]({temp_link})\n⚠️ *This link is valid for ~1 hour!*", disable_web_page_preview=True)
+        # Handle non-video messages
+        await message.reply_text("📥 Please send a video to store it and get a temporary link.")
 
 # Run the bot
 if __name__ == "__main__":
