@@ -1,26 +1,14 @@
 from pyrogram import Client, filters
 from pyrogram.types import Message, ChatJoinRequest
-from firebase_admin import credentials, db, initialize_app
-import os
+import requests
+import time
 
 # Import your config variables
 from config import API_ID, API_HASH, BOT_TOKEN, OWNER_ID
 
-# Initialize Firebase with the service account key for Realtime Database
-try:
-    cred = credentials.Certificate("path/to/your/serviceAccountKey.json")  # Update this path
-    initialize_app(cred, {
-        'databaseURL': 'https://devz-b17d8-default-rtdb.firebaseio.com'  # Your RTDB URL
-    })
-    # Reference to the root of the Realtime Database
-    root_ref = db.reference()
-except Exception as e:
-    print(f"Error initializing Firebase: {e}")
-    exit(1)
-
-# References to specific paths in RTDB
-users_ref = root_ref.child('users')
-chats_ref = root_ref.child('chats')
+# Firebase Realtime Database setup
+DB_URL = "https://devz-b17d8-default-rtdb.firebaseio.com"
+API_KEY = "AIzaSyC13UFJ7vmhC8WZ9MpbzVfXiJB9TfFGCjs"  # Your API key
 
 # Initialize the bot
 class Bot(Client):
@@ -48,27 +36,35 @@ class Bot(Client):
 # Create bot instance
 app = Bot()
 
-# Store user data in RTDB
+# Save user data to Firebase Realtime Database
 def save_user(user):
     try:
-        users_ref.child(str(user.id)).update({
+        url = f"{DB_URL}/users/{user.id}.json?auth={API_KEY}"
+        data = {
             "name": user.first_name or "Unknown",
             "username": user.username or "N/A",
-            "joined_at": db.ServerValue.TIMESTAMP  # Server-side timestamp
-        })
+            "joined_at": int(time.time())  # Current timestamp
+        }
+        response = requests.put(url, json=data)
+        if response.status_code != 200:
+            print(f"Failed to save user {user.id}: {response.text}")
     except Exception as e:
-        print(f"Error saving user to RTDB: {e}")
+        print(f"Error saving user: {e}")
 
-# Store chat data in RTDB
+# Save chat data to Firebase Realtime Database
 def save_chat(chat):
     try:
-        chats_ref.child(str(chat.id)).update({
+        url = f"{DB_URL}/chats/{chat.id}.json?auth={API_KEY}"
+        data = {
             "title": chat.title or "Unnamed Chat",
             "type": chat.type,
-            "added_at": db.ServerValue.TIMESTAMP  # Server-side timestamp
-        })
+            "added_at": int(time.time())
+        }
+        response = requests.put(url, json=data)
+        if response.status_code != 200:
+            print(f"Failed to save chat {chat.id}: {response.text}")
     except Exception as e:
-        print(f"Error saving chat to RTDB: {e}")
+        print(f"Error saving chat: {e}")
 
 # /start command
 @app.on_message(filters.command("start") & filters.private)
@@ -133,7 +129,8 @@ async def handle_join_request(client, join_request: ChatJoinRequest):
 @app.on_message(filters.command("s") & filters.private & filters.user(OWNER_ID))
 async def show_chats(client, message: Message):
     try:
-        chats = chats_ref.get() or {}
+        response = requests.get(f"{DB_URL}/chats.json?auth={API_KEY}")
+        chats = response.json() or {}
         if chats:
             chat_list = "\n".join([f"- {chat_data['title']} (ID: {chat_id})" for chat_id, chat_data in chats.items()])
             await message.reply_text(f"Connected chats:\n{chat_list}")
@@ -146,7 +143,8 @@ async def show_chats(client, message: Message):
 @app.on_message(filters.command("u") & filters.private & filters.user(OWNER_ID))
 async def show_user_stats(client, message: Message):
     try:
-        users = users_ref.get() or {}
+        response = requests.get(f"{DB_URL}/users.json?auth={API_KEY}")
+        users = response.json() or {}
         user_count = len(users)
         await message.reply_text(f"Total users: {user_count}")
     except Exception as e:
