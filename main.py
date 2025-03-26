@@ -1,5 +1,5 @@
 from pyrogram import Client, filters
-from pyrogram.types import Message, ChatJoinRequest
+from pyrogram.types import Message, ChatJoinRequest, InlineKeyboardMarkup, InlineKeyboardButton
 import requests
 import time
 
@@ -8,7 +8,7 @@ from config import API_ID, API_HASH, BOT_TOKEN, OWNER_ID
 
 # Firebase Realtime Database setup
 DB_URL = "https://devz-b17d8-default-rtdb.firebaseio.com"
-API_KEY = "AIzaSyC13UFJ7vmhC8WZ9MpbzVfXiJB9TfFGCjs"
+API_KEY = "AIzaSyC13UFJ7vmhC8WZ9MpbzVfXiJB9TfFGCjs"  # Your API key
 
 # Initialize the bot
 class Bot(Client):
@@ -22,7 +22,6 @@ class Bot(Client):
             sleep_threshold=10
         )
         self.connected_chats = set()
-        self.waiting_for_chat = {}  # Track users waiting to send forwarded message
 
     async def start(self):
         await super().start()
@@ -37,7 +36,7 @@ class Bot(Client):
 # Create bot instance
 app = Bot()
 
-# Save user data to Firebase Realtime Database
+# Save user data to Firebase
 def save_user(user):
     try:
         url = f"{DB_URL}/users/{user.id}.json?auth={API_KEY}"
@@ -52,83 +51,108 @@ def save_user(user):
     except Exception as e:
         print(f"Error saving user: {e}")
 
-# Save chat data to Firebase Realtime Database
-def save_chat(chat_id, title, chat_type):
+# Save chat data to Firebase
+def save_chat(chat):
     try:
-        url = f"{DB_URL}/chats/{chat_id}.json?auth={API_KEY}"
+        url = f"{DB_URL}/chats/{chat.id}.json?auth={API_KEY}"
         data = {
-            "title": title or "Unnamed Chat",
-            "type": chat_type,
+            "title": chat.title or "Unnamed Chat",
+            "type": chat.type,
             "added_at": int(time.time())
         }
         response = requests.put(url, json=data)
         if response.status_code != 200:
-            print(f"Failed to save chat {chat_id}: {response.text}")
+            print(f"Failed to save chat {chat.id}: {response.text}")
     except Exception as e:
         print(f"Error saving chat: {e}")
 
-# /start command
+# /start command - Show button to pick chats
 @app.on_message(filters.command("start") & filters.private)
 async def start_command(client, message: Message):
     save_user(message.from_user)
     welcome_text = (
         f"Hello {message.from_user.first_name}! 👋\n"
-        "I’m a bot to manage join requests. Here are my commands:\n\n"
+        "I’m a bot to manage join requests. Click below to pick a chat where I’ll work.\n\n"
+        "Commands:\n"
         "/start - Show this message\n"
-        "/add - Add me as an admin to your group/channel\n"
     )
     if message.from_user.id == OWNER_ID:
         welcome_text += (
             "/s - Show connected chats\n"
             "/u - Show user stats\n"
         )
-    await message.reply_text(welcome_text)
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("Pick a Chat", callback_data="pick_chat")]
+    ])
+    await message.reply_text(welcome_text, reply_markup=keyboard)
 
-# /add command
-@app.on_message(filters.command("add") & filters.private)
-async def add_command(client, message: Message):
-    user_id = message.from_user.id
-    save_user(message.from_user)
-    app.waiting_for_chat[user_id] = True  # Mark user as waiting for forwarded message
-    await message.reply_text(
-        "Here’s the deal:\n"
-        "1. Add me as an admin to your group/channel with 'Approve New Members' permission.\n"
-        "2. Forward any message from that chat to me (with the 'Forwarded from' tag).\n"
-        "I’ll check it and confirm!"
-    )
-
-# Handle forwarded message from user
-@app.on_message(filters.private & filters.forwarded)
-async def handle_forwarded_message(client, message: Message):
-    user_id = message.from_user.id
-    if user_id not in app.waiting_for_chat:
-        await message.reply_text("Yo, use /add first so I know what’s up!")
-        return
-
-    if not message.forward_from_chat:
-        await message.reply_text("Bro, forward a message from the chat with the 'Forwarded from' tag!")
-        return
-
-    chat_id = message.forward_from_chat.id
-    chat_title = message.forward_from_chat.title
-    chat_type = message.forward_from_chat.type
-
+# Handle button click - Show user’s chats
+@app.on_callback_query(filters.regex("pick_chat"))
+async def show_chats(client, callback_query):
+    user_id = callback_query.from_user.id
     try:
-        # Check if bot is an admin in that chat
-        bot_member = await client.get_chat_member(chat_id, (await client.get_me()).id)
-        if bot_member.status not in ["administrator", "creator"]:
-            await message.reply_text("I’m not an admin there! Give me 'Approve New Members' permission and try again.")
+        # Get user’s chats (groups/channels where they’re admin)
+        chats = []
+        async for chat in client.get_chats():
+            if chat.type in ["group", "supergroup", "channel"]:
+                member = await chat.get_member(user_id)
+                if member.status in ["creator", "administrator"]:
+                    chats.append((chat.id, chat.title or "Unnamed Chat"))
+        
+        if not chats:
+            await callback_query.edit_message_text("You’re not an admin in any chats I can see, bro. Add me manually somewhere!")
             return
 
-        # Bot is admin—save it and confirm
-        app.connected_chats.add(chat_id)
-        save_chat(chat_id, chat_title, chat_type)
-        await message.reply_text(f"✅ Success! I’m an admin in {chat_title or 'this chat'} and good to go.")
-        del app.waiting_for_chat[user_id]  # Done with this user
-
+        # Build buttons for each chat
+        buttons = [
+            [InlineKeyboardButton(title, callback_data=f"select_chat_{chat_id}")]
+            for chat_id, title in chats
+        ]
+        keyboard = InlineKeyboardMarkup(buttons)
+        await callback_query.edit_message_text("Pick a chat to add me to:", reply_markup=keyboard)
     except Exception as e:
-        print(f"Error checking chat: {e}")
-        await message.reply_text("Something went wrong—make sure I’m in the chat and try again.")
+        await callback_query.edit_message_text(f"Error fetching chats: {e}")
+
+# Handle chat selection
+@app.on_callback_query(filters.regex(r"select_chat_(-?\d+)"))
+async def select_chat(client, callback_query):
+    chat_id = int(callback_query.data.split("_")[-1])
+    user_id = callback_query.from_user.id
+    try:
+        # Check if bot is already in the chat
+        bot_member = await client.get_chat_member(chat_id, (await client.get_me()).id)
+        if bot_member.status == "administrator":
+            app.connected_chats.add(chat_id)
+            chat = await client.get_chat(chat_id)
+            save_chat(chat)
+            await callback_query.edit_message_text(f"I’m already an admin in {chat.title or 'this chat'}! Ready to roll.")
+            return
+    except Exception:
+        # Bot isn’t in the chat or not admin yet
+        pass
+
+    # Tell user to add bot as admin
+    chat = await client.get_chat(chat_id)
+    await callback_query.edit_message_text(
+        f"Add me (@{app.username}) as an admin to {chat.title or 'this chat'} with 'Approve New Members' permission.\n"
+        "I’ll confirm once I’m in!"
+    )
+
+# Handle bot being added as admin
+@app.on_chat_member_updated()
+async def on_member_updated(client, update):
+    if update.new_chat_member and update.new_chat_member.user.id == (await client.get_me()).id:
+        if update.new_chat_member.status == "administrator":
+            chat_id = update.chat.id
+            app.connected_chats.add(chat_id)
+            save_chat(update.chat)
+            try:
+                await client.send_message(
+                    update.from_user.id,
+                    f"✅ Success! I’m now an admin in {update.chat.title or 'this chat'}."
+                )
+            except Exception as e:
+                print(f"Error sending success message: {e}")
 
 # Handle join requests
 @app.on_chat_join_request()
@@ -144,6 +168,24 @@ async def handle_join_request(client, join_request: ChatJoinRequest):
             )
         except Exception as e:
             print(f"Error approving join request: {e}")
+
+# Handle forwarded messages - Check access
+@app.on_message(filters.forwarded & filters.private)
+async def check_forwarded_chat(client, message: Message):
+    if message.forward_from_chat:
+        chat_id = message.forward_from_chat.id
+        try:
+            # Try sending a test message to the chat
+            await client.send_message(chat_id, "Yo, just checking if I can talk here.")
+            app.connected_chats.add(chat_id)
+            chat = await client.get_chat(chat_id)
+            save_chat(chat)
+            await message.reply_text(f"I can message {chat.title or 'that chat'}! I’m good to go there.")
+        except Exception as e:
+            await message.reply_text(
+                f"Can’t message {message.forward_from_chat.title or 'that chat'} yet. Add me as an admin there!"
+            )
+            print(f"Error checking forwarded chat {chat_id}: {e}")
 
 # /s command (owner only) - Show connected chats
 @app.on_message(filters.command("s") & filters.private & filters.user(OWNER_ID))
