@@ -8,7 +8,7 @@ from config import API_ID, API_HASH, BOT_TOKEN, OWNER_ID
 
 # Firebase Realtime Database setup
 DB_URL = "https://devz-b17d8-default-rtdb.firebaseio.com"
-API_KEY = "AIzaSyC13UFJ7vmhC8WZ9MpbzVfXiJB9TfFGCjs"  # Your API key
+API_KEY = "AIzaSyC13UFJ7vmhC8WZ9MpbzVfXiJB9TfFGCjs"
 
 # Initialize the bot
 class Bot(Client):
@@ -22,6 +22,7 @@ class Bot(Client):
             sleep_threshold=10
         )
         self.connected_chats = set()
+        self.waiting_for_chat = {}  # Track users waiting to send forwarded message
 
     async def start(self):
         await super().start()
@@ -43,7 +44,7 @@ def save_user(user):
         data = {
             "name": user.first_name or "Unknown",
             "username": user.username or "N/A",
-            "joined_at": int(time.time())  # Current timestamp
+            "joined_at": int(time.time())
         }
         response = requests.put(url, json=data)
         if response.status_code != 200:
@@ -52,17 +53,17 @@ def save_user(user):
         print(f"Error saving user: {e}")
 
 # Save chat data to Firebase Realtime Database
-def save_chat(chat):
+def save_chat(chat_id, title, chat_type):
     try:
-        url = f"{DB_URL}/chats/{chat.id}.json?auth={API_KEY}"
+        url = f"{DB_URL}/chats/{chat_id}.json?auth={API_KEY}"
         data = {
-            "title": chat.title or "Unnamed Chat",
-            "type": chat.type,
+            "title": title or "Unnamed Chat",
+            "type": chat_type,
             "added_at": int(time.time())
         }
         response = requests.put(url, json=data)
         if response.status_code != 200:
-            print(f"Failed to save chat {chat.id}: {response.text}")
+            print(f"Failed to save chat {chat_id}: {response.text}")
     except Exception as e:
         print(f"Error saving chat: {e}")
 
@@ -86,29 +87,48 @@ async def start_command(client, message: Message):
 # /add command
 @app.on_message(filters.command("add") & filters.private)
 async def add_command(client, message: Message):
+    user_id = message.from_user.id
     save_user(message.from_user)
+    app.waiting_for_chat[user_id] = True  # Mark user as waiting for forwarded message
     await message.reply_text(
-        "To use me, add me as an admin to your group or channel:\n"
-        "1. Go to your chat settings.\n"
-        "2. Add me (@YourBotUsername) as an admin with 'Approve New Members' permission.\n"
-        "3. I’ll confirm once I’m added!"
+        "Here’s the deal:\n"
+        "1. Add me as an admin to your group/channel with 'Approve New Members' permission.\n"
+        "2. Forward any message from that chat to me (with the 'Forwarded from' tag).\n"
+        "I’ll check it and confirm!"
     )
 
-# Handle bot being added as admin
-@app.on_chat_member_updated()
-async def on_member_updated(client, update):
-    if update.new_chat_member and update.new_chat_member.user.id == (await client.get_me()).id:
-        if update.new_chat_member.status == "administrator":
-            chat_id = update.chat.id
-            app.connected_chats.add(chat_id)
-            save_chat(update.chat)
-            try:
-                await client.send_message(
-                    update.from_user.id,
-                    f"✅ Success! I’ve been added as an admin to {update.chat.title or 'this chat'}."
-                )
-            except Exception as e:
-                print(f"Error sending success message: {e}")
+# Handle forwarded message from user
+@app.on_message(filters.private & filters.forwarded)
+async def handle_forwarded_message(client, message: Message):
+    user_id = message.from_user.id
+    if user_id not in app.waiting_for_chat:
+        await message.reply_text("Yo, use /add first so I know what’s up!")
+        return
+
+    if not message.forward_from_chat:
+        await message.reply_text("Bro, forward a message from the chat with the 'Forwarded from' tag!")
+        return
+
+    chat_id = message.forward_from_chat.id
+    chat_title = message.forward_from_chat.title
+    chat_type = message.forward_from_chat.type
+
+    try:
+        # Check if bot is an admin in that chat
+        bot_member = await client.get_chat_member(chat_id, (await client.get_me()).id)
+        if bot_member.status not in ["administrator", "creator"]:
+            await message.reply_text("I’m not an admin there! Give me 'Approve New Members' permission and try again.")
+            return
+
+        # Bot is admin—save it and confirm
+        app.connected_chats.add(chat_id)
+        save_chat(chat_id, chat_title, chat_type)
+        await message.reply_text(f"✅ Success! I’m an admin in {chat_title or 'this chat'} and good to go.")
+        del app.waiting_for_chat[user_id]  # Done with this user
+
+    except Exception as e:
+        print(f"Error checking chat: {e}")
+        await message.reply_text("Something went wrong—make sure I’m in the chat and try again.")
 
 # Handle join requests
 @app.on_chat_join_request()
