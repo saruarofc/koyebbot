@@ -20,7 +20,7 @@ RAPIDAPI_HOST = "terabox-downloader-online-viewer-player-api.p.rapidapi.com"
 # Initialize bot
 app = Client("terabox_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
-# Function to get download link
+# Function to get the download link from RapidAPI
 def get_download_link(terabox_url):
     headers = {
         "x-rapidapi-key": RAPIDAPI_KEY,
@@ -31,15 +31,31 @@ def get_download_link(terabox_url):
     try:
         response = requests.get(RAPIDAPI_URL, headers=headers, params=querystring)
         data = response.json()
-        return data.get("download_link")  # Extracting direct download link
+        return data.get("download_link")  # Extract direct download link
     except Exception as e:
         print(f"Error fetching download link: {e}")
         return None
 
+# Function to download with progress updates
+async def download_video(url, file_path, message):
+    response = requests.get(url, stream=True)
+    total_size = int(response.headers.get("content-length", 0))
+    downloaded_size = 0
+
+    with open(file_path, "wb") as f:
+        for chunk in response.iter_content(chunk_size=1024 * 1024):  # 1MB chunks
+            if chunk:
+                f.write(chunk)
+                downloaded_size += len(chunk)
+                progress = (downloaded_size / total_size) * 100
+                await message.edit(f"📥 Downloading... {progress:.2f}% complete")
+
+    return file_path
+
 # Command handler for /start
 @app.on_message(filters.command("start") & filters.private)
 async def start(client, message: Message):
-    await message.reply_text("👋 Welcome! Send me a Terabox link, and I'll fetch the video for you.")
+    await message.reply_text("👋 Welcome! Send me a Terabox link, and I'll handle/fuvk the video for you.")
 
 # Handler for Terabox links
 @app.on_message(filters.regex(r'https?://teraboxapp\.com/s/\S+') & filters.private)
@@ -52,19 +68,15 @@ async def fetch_video(client, message: Message):
         await msg.edit("❌ Failed to fetch the download link. Please check the link and try again.")
         return
 
-    await msg.edit("📥 Downloading the video...")
+    await msg.edit("✅ Download link found! Starting download...")
 
     video_path = f"downloaded_{int(time.time())}.mp4"
     try:
-        video_response = requests.get(download_url, stream=True)
-        with open(video_path, "wb") as f:
-            for chunk in video_response.iter_content(chunk_size=1024):
-                if chunk:
-                    f.write(chunk)
+        await download_video(download_url, video_path, msg)
 
         await msg.edit("✅ Download complete! Uploading now...")
 
-        # Send video
+        # Send video with progress updates
         await client.send_video(message.chat.id, video_path, caption="🎬 Here is your downloaded video!")
 
         # Cleanup
