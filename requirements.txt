@@ -13,3 +13,4 @@ aiohttp==3.9.3
 yt-dlp
 pyrogram
 firebase_admin
+requests
