@@ -14,3 +14,6 @@ yt-dlp
 pyrogram
 firebase_admin
 requests
+json
+base64
+random
