@@ -11,7 +11,7 @@ BKASH_PASSWORD = "your_bkash_password"
 BKASH_APP_KEY = "your_app_key"
 BKASH_APP_SECRET = "your_app_secret"
 
-# bKash sandbox API URLs
+# bKash sandbox API URLs (Bkash)
 BKASH_API_BASE = "https://tokenized.sandbox.bka.sh/v1.2.0-beta/tokenized/checkout"
 CREATE_PAYMENT_URL = f"{BKASH_API_BASE}/create"
 EXECUTE_PAYMENT_URL = f"{BKASH_API_BASE}/execute"
